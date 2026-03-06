@@ -170,6 +170,12 @@ class ImaginaireTrainer:
         if self.config.trainer.run_validation and iteration == 0:
             self.validate(model, dataloader_val, iteration=iteration)
             log.info("Initial validation done.")
+
+        # Save step 0 checkpoint
+        # if iteration == 0:
+        #     log.info("Saving step 0 checkpoint...")
+        #     self.checkpointer.save(model, optimizer, scheduler, grad_scaler, iteration=iteration)
+        #     log.info("Step 0 checkpoint saved.")
         _end_training = False
         with (
             maybe_enable_profiling(self.config, global_step=iteration) as torch_profiler,
@@ -183,6 +189,7 @@ class ImaginaireTrainer:
                         with self.training_timer("dataloader_train"):
                             data_batch = next(dataloader_train_iter)
                     except StopIteration:
+                        distributed.barrier()
                         break
                     finally:
                         self.callbacks.on_after_dataloading(iteration)
@@ -218,6 +225,11 @@ class ImaginaireTrainer:
                     iteration += 1
                     # Save checkpoint.
                     if iteration % self.config.checkpoint.save_iter == 0:
+                        # Synchronize GPU and CPU to ensure FSDP states are fully updated (IDLE)
+                        if torch.cuda.is_available():
+                            torch.cuda.synchronize()
+                        # Barrier to ensure all ranks reached this point safely
+                        distributed.barrier()
                         self.checkpointer.save(model, optimizer, scheduler, grad_scaler, iteration=iteration)
                     self.callbacks.on_training_step_end(model, data_batch, output_batch, loss, iteration=iteration)
                     # Validation.
@@ -229,8 +241,8 @@ class ImaginaireTrainer:
                         torch_profiler.step()
                     if memory_profiler:
                         memory_profiler.step()
-                if _end_training:
-                    break
+                    if _end_training:
+                        break
         log.success("Done with training.")
         if iteration % self.config.checkpoint.save_iter != 0:
             self.checkpointer.save(model, optimizer, scheduler, grad_scaler, iteration=iteration)

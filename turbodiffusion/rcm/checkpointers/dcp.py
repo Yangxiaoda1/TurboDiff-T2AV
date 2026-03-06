@@ -595,7 +595,7 @@ class DistributedCheckpointer:
                 log.info("Queue was closed by checkpoint background process")
 
     def get_storage_writer(self, checkpoint_path: str) -> FileSystemWriter:
-        return FileSystemWriter(path=checkpoint_path)
+        return FileSystemWriter(path=checkpoint_path, overwrite=True)
 
     def get_storage_reader(self, checkpoint_path: str) -> FileSystemReader:
         return FileSystemReader(checkpoint_path)
@@ -608,6 +608,10 @@ class DistributedCheckpointer:
                 storage_writer=storage_writer,
                 planner=DefaultSavePlanner(dedup_save_to_lowest_rank=True),
             )
+        
+        # Add barrier to ensure all ranks finish saving before writing metadata or proceeding
+        if torch.distributed.is_initialized():
+            torch.distributed.barrier()
 
         self._write_latest_checkpoint_file(checkpoint_file)
         log.critical(

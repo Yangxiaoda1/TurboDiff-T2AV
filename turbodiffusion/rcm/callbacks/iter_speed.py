@@ -54,16 +54,22 @@ class IterSpeed(EveryN):
         iteration: int = 0,
     ) -> None:
         if self.hit_counter < self.hit_thres:
-            log.info(
+            msg = (
                 f"Iteration {iteration}: "
                 f"Hit counter: {self.hit_counter + 1}/{self.hit_thres} | "
                 f"Loss: {loss.item():.4f} | "
-                f"Time: {time.time() - self.last_hit_time:.2f}s"
             )
+            if "loss_v" in output_batch:
+                msg += f"video_loss: {output_batch['loss_v'].item():.4f} | "
+            if "loss_a" in output_batch:
+                msg += f"audio_loss: {output_batch['loss_a'].item():.4f} | "
+            msg += f"Time: {time.time() - self.last_hit_time:.2f}s"
+            log.info(msg)
             self.hit_counter += 1
             self.last_hit_time = time.time()
             #! useful for large scale training and avoid oom crash in the first two iterations!!!
-            torch.cuda.synchronize()
+            if iteration < self.hit_thres:
+                torch.cuda.synchronize()
             return
         super().on_training_step_end(model, data_batch, output_batch, loss, iteration)
 
@@ -83,7 +89,12 @@ class IterSpeed(EveryN):
         cur_time = time.time()
         iter_speed = (cur_time - self.time) / self.every_n / self.step_size
 
-        log.info(f"{iteration} : iter_speed {iter_speed:.2f} seconds per iteration | Loss: {loss.item():.4f}")
+        msg = f"{iteration} : iter_speed {iter_speed:.2f} seconds per iteration | Loss: {loss.item():.4f}"
+        if "loss_v" in output_batch:
+            msg += f" | video_loss: {output_batch['loss_v'].item():.4f}"
+        if "loss_a" in output_batch:
+            msg += f" | audio_loss: {output_batch['loss_a'].item():.4f}"
+        log.info(msg)
 
         if wandb.run:
             sample_counter = getattr(trainer, "sample_counter", iteration)

@@ -543,79 +543,89 @@ class T2VDistillModel_rCM(ImaginaireModel):
         return (F_pred_B_C_T_H_W, t_F_pred_B_C_T_H_W.detach())
 
     def training_step_generator(self, x0_B_C_T_H_W: torch.Tensor, condition: TextCondition, uncondition: TextCondition, iteration: int):
-        log.debug(f"Student update {iteration}")
-        time_B_T = self.draw_training_time_G(x0_B_C_T_H_W.size(), condition)
-        epsilon_B_C_T_H_W = torch.randn(x0_B_C_T_H_W.size(), device="cuda")
+        log.debug(f"Student update {iteration}")  # 打日志：当前为 student 更新
+        time_B_T = self.draw_training_time_G(x0_B_C_T_H_W.size(), condition)  # 采样生成器用的时间 t
+        epsilon_B_C_T_H_W = torch.randn(x0_B_C_T_H_W.size(), device="cuda")  # 随机噪声
         x0_B_C_T_H_W, time_B_T, epsilon_B_C_T_H_W, condition, uncondition = self.sync(
             x0_B_C_T_H_W, time_B_T, epsilon_B_C_T_H_W, condition, uncondition
-        )
+        )  # 多卡/CP 下同步
 
-        time_B_1_T_1_1 = rearrange(time_B_T, "b t -> b 1 t 1 1")
-        cost_B_1_T_1_1, sint_B_1_T_1_1 = torch.cos(time_B_1_T_1_1), torch.sin(time_B_1_T_1_1)
+        time_B_1_T_1_1 = rearrange(time_B_T, "b t -> b 1 t 1 1")  # 扩维便于广播
+        cost_B_1_T_1_1, sint_B_1_T_1_1 = torch.cos(time_B_1_T_1_1), torch.sin(time_B_1_T_1_1)  # cos(t), sin(t)
         # Generate noisy observations
-        xt_B_C_T_H_W = x0_B_C_T_H_W * cost_B_1_T_1_1 + epsilon_B_C_T_H_W * sint_B_1_T_1_1
+        xt_B_C_T_H_W = x0_B_C_T_H_W * cost_B_1_T_1_1 + epsilon_B_C_T_H_W * sint_B_1_T_1_1  # 加噪：x_t = x0*cos(t) + eps*sin(t)
         with torch.no_grad():
-            F_teacher_B_C_T_H_W = self.denoise(xt_B_C_T_H_W, time_B_T, condition, net_type="teacher").F
+            F_teacher_B_C_T_H_W = self.denoise(xt_B_C_T_H_W, time_B_T, condition, net_type="teacher").F  # 教师对 x_t 预测的 F
             if self.teacher_guidance > 0.0:
-                F_teacher_B_C_T_H_W_uncond = self.denoise(xt_B_C_T_H_W, time_B_T, uncondition, net_type="teacher").F
-                F_teacher_B_C_T_H_W = F_teacher_B_C_T_H_W + self.teacher_guidance * (F_teacher_B_C_T_H_W - F_teacher_B_C_T_H_W_uncond)
+                F_teacher_B_C_T_H_W_uncond = self.denoise(xt_B_C_T_H_W, time_B_T, uncondition, net_type="teacher").F  # 教师无条件 F
+                F_teacher_B_C_T_H_W = F_teacher_B_C_T_H_W + self.teacher_guidance * (F_teacher_B_C_T_H_W - F_teacher_B_C_T_H_W_uncond)  # CFG 条件 F
 
         # see Section 5.1 JVP rearrangement discussion https://arxiv.org/pdf/2410.11081
-        t_xt_B_C_T_H_W = cost_B_1_T_1_1 * sint_B_1_T_1_1 * F_teacher_B_C_T_H_W
-        t_time_B_T = (cost_B_1_T_1_1 * sint_B_1_T_1_1).squeeze(dim=[1, 3, 4])
+        t_xt_B_C_T_H_W = cost_B_1_T_1_1 * sint_B_1_T_1_1 * F_teacher_B_C_T_H_W  # x 对 t 的切向量（用于 JVP）
+        t_time_B_T = (cost_B_1_T_1_1 * sint_B_1_T_1_1).squeeze(dim=[1, 3, 4])  # 时间维对 t 的导数
 
         with torch.no_grad():
-            if self.fd_type == 1:  # semi-continuous
-                _, t_F_theta_B_C_T_H_W = self.student_F_withT((xt_B_C_T_H_W, t_xt_B_C_T_H_W), (time_B_T, 0 * t_time_B_T), condition)
+            if self.fd_type == 1:  # semi-continuous 半连续有限差分
+                _, t_F_theta_B_C_T_H_W = self.student_F_withT((xt_B_C_T_H_W, t_xt_B_C_T_H_W), (time_B_T, 0 * t_time_B_T), condition)  # JVP 得 F 对 t 的导数
+                h = self.fd_size  # 有限差分步长
+                F_theta_B_C_T_H_W_n1 = self.denoise(xt_B_C_T_H_W, time_B_T - h, condition, net_type="student").F  # student 在 t-h 的 F
+                pF_pt_B_C_T_H_W = (np.cos(h) * _ - F_theta_B_C_T_H_W_n1) / np.sin(h)  # 用有限差分估计 dF/dt
+                t_F_theta_B_C_T_H_W += cost_B_1_T_1_1 * sint_B_1_T_1_1 * pF_pt_B_C_T_H_W  # 修正 t_F_theta
+            elif self.fd_type == 2:  # discrete 离散有限差分
                 h = self.fd_size
-                F_theta_B_C_T_H_W_n1 = self.denoise(xt_B_C_T_H_W, time_B_T - h, condition, net_type="student").F
-                pF_pt_B_C_T_H_W = (np.cos(h) * _ - F_theta_B_C_T_H_W_n1) / np.sin(h)
-                t_F_theta_B_C_T_H_W += cost_B_1_T_1_1 * sint_B_1_T_1_1 * pF_pt_B_C_T_H_W
-            elif self.fd_type == 2:  # discrete
-                h = self.fd_size
-                _ = self.denoise(xt_B_C_T_H_W, time_B_T, condition, net_type="student").F
-                xt2_B_C_T_H_W = np.cos(h) * xt_B_C_T_H_W - np.sin(h) * F_teacher_B_C_T_H_W
-                _2 = self.denoise(xt2_B_C_T_H_W, time_B_T - h, condition, net_type="student").F
-                dF_pt_B_C_T_H_W = (np.cos(h) * _ - _2) / np.sin(h)
+                _ = self.denoise(xt_B_C_T_H_W, time_B_T, condition, net_type="student").F  # student 在 t 的 F
+                xt2_B_C_T_H_W = np.cos(h) * xt_B_C_T_H_W - np.sin(h) * F_teacher_B_C_T_H_W  # 沿教师流推进到 t-h 的 x
+                _2 = self.denoise(xt2_B_C_T_H_W, time_B_T - h, condition, net_type="student").F  # student 在 t-h 的 F
+                dF_pt_B_C_T_H_W = (np.cos(h) * _ - _2) / np.sin(h)  # 离散估计 dF/dt
                 t_F_theta_B_C_T_H_W = cost_B_1_T_1_1 * sint_B_1_T_1_1 * dF_pt_B_C_T_H_W
             else:
-                _, t_F_theta_B_C_T_H_W = self.student_F_withT((xt_B_C_T_H_W, t_xt_B_C_T_H_W), (time_B_T, t_time_B_T), condition)
+                _, t_F_theta_B_C_T_H_W = self.student_F_withT((xt_B_C_T_H_W, t_xt_B_C_T_H_W), (time_B_T, t_time_B_T), condition)  # 用 JVP 直接算 dF/dt
 
-        if self.net_fake_score and iteration > self.tangent_warmup:
-            G_time_B_T = math.pi / 2 * torch.ones_like(time_B_T)
+        if self.net_fake_score and iteration > self.tangent_warmup:  # 若有 fake_score 且过了 tangent warmup
+            G_time_B_T = math.pi / 2 * torch.ones_like(time_B_T)  # 生成器起点时间 π/2（高噪声）
             G_time_B_1_T_1_1 = rearrange(G_time_B_T, "b t -> b 1 t 1 1")
             G_cost_B_1_T_1_1, G_sint_B_1_T_1_1 = torch.cos(G_time_B_1_T_1_1), torch.sin(G_time_B_1_T_1_1)
-            G_xt_B_C_T_H_W = x0_B_C_T_H_W * G_cost_B_1_T_1_1 + torch.randn_like(epsilon_B_C_T_H_W) * G_sint_B_1_T_1_1
+            G_xt_B_C_T_H_W = x0_B_C_T_H_W * G_cost_B_1_T_1_1 + torch.randn_like(epsilon_B_C_T_H_W) * G_sint_B_1_T_1_1  # 从高噪声采样
             G_xt_B_C_T_H_W = self.sync(G_xt_B_C_T_H_W)
-            num_simulation_steps_fake = self.get_effective_iteration(iteration) % self.max_simulation_steps_fake
-            for _ in range(num_simulation_steps_fake):
+            num_simulation_steps_fake = self.get_effective_iteration(iteration) % self.max_simulation_steps_fake  # 本次 fake 模拟步数
+            for _ in range(num_simulation_steps_fake):  # 用 student 从高噪声往低噪声推若干步
                 with torch.no_grad():
-                    G_x0_B_C_T_H_W = self.denoise(G_xt_B_C_T_H_W, G_time_B_T, condition, net_type="student").x0
-                G_time_B_T = torch.minimum(self.draw_training_time_D(x0_B_C_T_H_W.size(), condition), G_time_B_T)
+                    G_x0_B_C_T_H_W = self.denoise(G_xt_B_C_T_H_W, G_time_B_T, condition, net_type="student").x0  # student 预测 x0
+                G_time_B_T = torch.minimum(self.draw_training_time_D(x0_B_C_T_H_W.size(), condition), G_time_B_T)  # 下一时刻（往 t 小方向）
                 G_time_B_T = self.sync(G_time_B_T)
                 G_time_B_1_T_1_1 = rearrange(G_time_B_T, "b t -> b 1 t 1 1")
                 G_cost_B_1_T_1_1, G_sint_B_1_T_1_1 = torch.cos(G_time_B_1_T_1_1), torch.sin(G_time_B_1_T_1_1)
-                G_xt_B_C_T_H_W = G_x0_B_C_T_H_W * G_cost_B_1_T_1_1 + torch.randn_like(epsilon_B_C_T_H_W) * G_sint_B_1_T_1_1
+                G_xt_B_C_T_H_W = G_x0_B_C_T_H_W * G_cost_B_1_T_1_1 + torch.randn_like(epsilon_B_C_T_H_W) * G_sint_B_1_T_1_1  # 重参数化得到新 x_t
                 G_xt_B_C_T_H_W = self.sync(G_xt_B_C_T_H_W)
-            all_xt_B_C_T_H_W = torch.cat([xt_B_C_T_H_W, G_xt_B_C_T_H_W], dim=0)
+            all_xt_B_C_T_H_W = torch.cat([xt_B_C_T_H_W, G_xt_B_C_T_H_W], dim=0)  # 拼 SCM 样本与生成器样本
             all_time_B_T = torch.cat([time_B_T, G_time_B_T], dim=0)
             all_condition = concat_condition(condition, condition)
-            all_theta_B_C_T_H_W = self.denoise(all_xt_B_C_T_H_W, all_time_B_T, all_condition, net_type="student")
-            F_theta_B_C_T_H_W, _ = torch.chunk(all_theta_B_C_T_H_W.F, 2)
-            _, G_x0_theta_B_C_T_H_W = torch.chunk(all_theta_B_C_T_H_W.x0, 2)
+            all_theta_B_C_T_H_W = self.denoise(all_xt_B_C_T_H_W, all_time_B_T, all_condition, net_type="student")  # 一次前向算两批
+            F_theta_B_C_T_H_W, _ = torch.chunk(all_theta_B_C_T_H_W.F, 2)  # 前半为 SCM 的 F
+            _, G_x0_theta_B_C_T_H_W = torch.chunk(all_theta_B_C_T_H_W.x0, 2)  # 后半为生成器轨迹的 x0 预测
         else:
-            F_theta_B_C_T_H_W = self.denoise(xt_B_C_T_H_W, time_B_T, condition, net_type="student").F
+            F_theta_B_C_T_H_W = self.denoise(xt_B_C_T_H_W, time_B_T, condition, net_type="student").F  # 仅 student 对 x_t 预测 F
+        # 学生流场 F_theta 的 stop-gradient 副本，仅用于构造 SCM 目标梯度 g，不参与反传，避免 g 对 student 求导
         F_theta_B_C_T_H_W_sg = F_theta_B_C_T_H_W.clone().detach()
 
+        # tangent 方向 warmup：从 0 逐渐增到 1，所以训练早期主要做法向对齐，后期再加强切向一致性
         warmup_ratio = min(1.0, iteration / self.tangent_warmup)
 
-        g_B_C_T_H_W = -cost_B_1_T_1_1 * torch.sqrt(1 - warmup_ratio**2 * sint_B_1_T_1_1**2) * (
-            F_theta_B_C_T_H_W_sg - F_teacher_B_C_T_H_W
-        ) - warmup_ratio * (cost_B_1_T_1_1 * sint_B_1_T_1_1 * xt_B_C_T_H_W + t_F_theta_B_C_T_H_W)
+        # 判断趋近，判断的变化趋近
+        # 训练时希望学生的 F_θ 不仅和教师的 F_teacher 在“法向”上对齐，还要在“沿轨迹的切向”上一致。g 就是把这个目标写成一个向量：学生应该从当前的 F_θ 往 F_θ + g 方向走。
+        g_B_C_T_H_W = -cost_B_1_T_1_1 * torch.sqrt(1 - warmup_ratio**2 * sint_B_1_T_1_1**2) * ( #sqrt(1 - warmup_ratio^2 * sin^2(t)) 用来在训练前期减弱这项的强度，和后面的 warmup_ratio 一起控制“法向/切向”的占比。
+            F_theta_B_C_T_H_W_sg - F_teacher_B_C_T_H_W  #(F_theta_sg - F_teacher)，即学生与教师的流场差，数值趋近；对应“法向”指：把学生预测拉向教师预测的方向，也就是在 F 空间里从教师指向学生（或反过来的校正方向）。
+        ) - warmup_ratio * (cost_B_1_T_1_1 * sint_B_1_T_1_1 * xt_B_C_T_H_W + t_F_theta_B_C_T_H_W) #对应切向（方向趋近）；t_F_theta_B_C_T_H_W：学生流场对时间 t 的导数 dF_θ/dt（JVP 或有限差分算出来的）
+        #  t_time = cos(t)*sin(t)；“F 沿轨迹该怎么变”的那部分 被写成了 cos(t)*sin(t)*x_t
+        # 所以切向项是在约束：学生的 F 不仅要在“数值上”接近教师（法向），还要在“沿轨迹演化”的方向上和轨迹一致（切向）。
+        # 为什么加了cost_B_1_T_1_1 * sint_B_1_T_1_1 * xt_B_C_T_H_W这一项就可以把切向矫正到教师轨迹上：教师轨迹上的几何是固定的x(t) = x0·cos(t) + ε·sin(t)，只要是这条轨迹，F 随 t 的变化就一定是 dF/dt = -x_t
 
         with torch.no_grad():
+            # dF/dt（用于日志/监控），不参与 loss 反传
             df_dt = -cost_B_1_T_1_1 * (F_theta_B_C_T_H_W_sg - F_teacher_B_C_T_H_W) - (sint_B_1_T_1_1 * xt_B_C_T_H_W + t_F_theta_B_C_T_H_W)
+            # 标记 g 中出现 nan 的样本（按 batch 维：该样本任意位置有 nan 则整样本标记）
             nan_mask_g = torch.isnan(g_B_C_T_H_W).flatten(start_dim=1).any(dim=1).view(*g_B_C_T_H_W.shape[:1], 1, 1, 1, 1).expand_as(g_B_C_T_H_W)
+            # 标记 F_theta 中出现 nan 的样本，便于后续 mask 掉异常样本
             nan_mask_F_theta = (
                 torch.isnan(F_theta_B_C_T_H_W)
                 .flatten(start_dim=1)
@@ -624,17 +634,21 @@ class T2VDistillModel_rCM(ImaginaireModel):
                 .expand_as(F_theta_B_C_T_H_W)
             )
 
+        # 任一为 nan 的样本整样本 mask，避免异常值参与 loss 与梯度
         nan_mask = nan_mask_g | nan_mask_F_theta
 
         g_B_C_T_H_W[nan_mask] = 0
         F_theta_B_C_T_H_W = torch.where(nan_mask, torch.tensor(0.0, device=F_theta_B_C_T_H_W.device), F_theta_B_C_T_H_W)
         F_theta_B_C_T_H_W_sg[nan_mask] = 0
 
+        # 对 g 做 L2 归一化（每样本一个范数），分母 +0.1 防止除零，用 double 提升数值稳定性
         g_B_C_T_H_W = g_B_C_T_H_W.double() / (g_B_C_T_H_W.double().norm(p=2, dim=(1, 2, 3, 4), keepdim=True) + 0.1)
 
+        # SCM loss：希望 F_theta 朝 F_theta_sg + g 更新，即 (F_theta - F_theta_sg - g)^2 求和
         loss_scm = ((F_theta_B_C_T_H_W - F_theta_B_C_T_H_W_sg - g_B_C_T_H_W) ** 2).sum(dim=(1, 2, 3, 4))
         kendall_loss = self.loss_scale * loss_scm
 
+        # TrigFlow 反推 x0：x0 = cos(t)*x_t - sin(t)*F，教师与学生各自用其 F 得到 x0 预测（用于评估/可视化）
         x0_teacher_B_C_T_H_W = cost_B_1_T_1_1 * xt_B_C_T_H_W - sint_B_1_T_1_1 * F_teacher_B_C_T_H_W
         x0_theta_B_C_T_H_W = cost_B_1_T_1_1 * xt_B_C_T_H_W - sint_B_1_T_1_1 * F_theta_B_C_T_H_W
         output_batch = {
@@ -649,32 +663,32 @@ class T2VDistillModel_rCM(ImaginaireModel):
             "model_pred": DenoisePrediction(x0_theta_B_C_T_H_W, F_theta_B_C_T_H_W),
         }
 
-        if self.net_fake_score and iteration > self.tangent_warmup:
-            D_time_B_T = self.draw_training_time_D(x0_B_C_T_H_W.size(), condition)
+        if self.net_fake_score and iteration > self.tangent_warmup:  # 若有 fake_score，加 DMD 损失
+            D_time_B_T = self.draw_training_time_D(x0_B_C_T_H_W.size(), condition)  # 判别器用的时间 t
             D_time_B_T = self.sync(D_time_B_T)
             D_time_B_1_T_1_1 = rearrange(D_time_B_T, "b t -> b 1 t 1 1")
-            D_xt_theta_B_C_T_H_W = G_x0_theta_B_C_T_H_W * torch.cos(D_time_B_1_T_1_1) + torch.randn_like(x0_B_C_T_H_W) * torch.sin(D_time_B_1_T_1_1)
+            D_xt_theta_B_C_T_H_W = G_x0_theta_B_C_T_H_W * torch.cos(D_time_B_1_T_1_1) + torch.randn_like(x0_B_C_T_H_W) * torch.sin(D_time_B_1_T_1_1)  # 从 G 的 x0 预测加噪得 D 的输入
             D_xt_theta_B_C_T_H_W = self.sync(D_xt_theta_B_C_T_H_W)
 
             with torch.no_grad():
-                x0_theta_fake_B_C_T_H_W = self.denoise(D_xt_theta_B_C_T_H_W, D_time_B_T, condition, net_type="fake_score").x0
+                x0_theta_fake_B_C_T_H_W = self.denoise(D_xt_theta_B_C_T_H_W, D_time_B_T, condition, net_type="fake_score").x0  # fake_score 网络预测的 x0
 
             with torch.no_grad():
-                x0_theta_teacher_B_C_T_H_W = self.denoise(D_xt_theta_B_C_T_H_W, D_time_B_T, condition, net_type="teacher").x0
+                x0_theta_teacher_B_C_T_H_W = self.denoise(D_xt_theta_B_C_T_H_W, D_time_B_T, condition, net_type="teacher").x0  # 教师对 D 输入预测的 x0（目标）
                 if self.teacher_guidance > 0.0:
                     x0_theta_teacher_B_C_T_H_W_uncond = self.denoise(D_xt_theta_B_C_T_H_W, D_time_B_T, uncondition, net_type="teacher").x0
                     x0_theta_teacher_B_C_T_H_W = x0_theta_teacher_B_C_T_H_W + self.teacher_guidance * (
                         x0_theta_teacher_B_C_T_H_W - x0_theta_teacher_B_C_T_H_W_uncond
-                    )
+                    )  # CFG
             with torch.no_grad():
                 weight_factor = (
                     torch.abs(G_x0_theta_B_C_T_H_W.double() - x0_theta_teacher_B_C_T_H_W.double())
                     .mean(dim=[1, 2, 3, 4], keepdim=True)
                     .clip(min=0.00001)
-                )
-            grad_B_C_T_H_W = (x0_theta_fake_B_C_T_H_W.double() - x0_theta_teacher_B_C_T_H_W.double()) / weight_factor
-            loss_dmd = (G_x0_theta_B_C_T_H_W.double() - (G_x0_theta_B_C_T_H_W.double() - grad_B_C_T_H_W).detach()) ** 2
-            loss_dmd[torch.isnan(loss_dmd).flatten(start_dim=1).any(dim=1)] = 0
+                )  # 加权因子，避免除零
+            grad_B_C_T_H_W = (x0_theta_fake_B_C_T_H_W.double() - x0_theta_teacher_B_C_T_H_W.double()) / weight_factor  # fake_score 相对教师的“梯度”方向
+            loss_dmd = (G_x0_theta_B_C_T_H_W.double() - (G_x0_theta_B_C_T_H_W.double() - grad_B_C_T_H_W).detach()) ** 2  # DMD：student 的 G_x0 应向 teacher 方向靠拢
+            loss_dmd[torch.isnan(loss_dmd).flatten(start_dim=1).any(dim=1)] = 0  # nan 样本不贡献 loss
             loss_dmd = loss_dmd.sum(dim=(1, 2, 3, 4))
             kendall_loss += self.loss_scale_dmd * loss_dmd
         return output_batch, kendall_loss

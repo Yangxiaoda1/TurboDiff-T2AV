@@ -41,7 +41,6 @@ nvcc_flags = [
 ]
 
 cc_flag = [
-    "-gencode", "arch=compute_120a,code=sm_120a", 
     "-gencode", "arch=compute_90,code=sm_90",
     "-gencode", "arch=compute_89,code=sm_89",
     "-gencode", "arch=compute_80,code=sm_80"

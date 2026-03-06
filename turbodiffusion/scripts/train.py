@@ -16,6 +16,12 @@
 import argparse
 import importlib
 import os
+import warnings
+
+# 屏蔽 PyTorch 分布式/checkpoint/FSDP 的已知 deprecation 警告，减少刷屏
+warnings.filterwarnings("ignore", message=".*_get_pg_default_device.*", category=UserWarning)
+warnings.filterwarnings("ignore", message=".*overwriting since.*overwrite.*", category=UserWarning)
+warnings.filterwarnings("ignore", message=".*deprecat.*ShardedTensor.*", category=FutureWarning)
 
 from loguru import logger as logging
 

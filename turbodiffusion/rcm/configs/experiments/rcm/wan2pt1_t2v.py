@@ -232,3 +232,5 @@ job_list = [WAN2PT1_1PT3B_RES480P_T2V, WAN2PT1_14B_RES480P_T2V]
 for job in job_list:
     cs.store(group="experiment", package="_global_", name=job["job"]["name"], node=job)
     cs.store(group="experiment", package="_global_", name=job["job"]["name"] + "_debug", node=build_debug_run(job))
+
+

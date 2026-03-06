@@ -65,11 +65,17 @@ def init() -> int | None:
     os.environ["TORCH_NCCL_ASYNC_ERROR_HANDLING"] = "1"
     if dist.is_available():
         torch.cuda.set_device(local_rank)
-        # Get the timeout value from environment variable
-        timeout_seconds = os.getenv("TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC", 1800)
+        # Get the timeout value from environment variable (default 20s, 快速暴露问题)
+        timeout_seconds = os.getenv("TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC", 20)
         # Convert the timeout to an integer (if it isn't already) and then to a timedelta
         timeout_timedelta = timedelta(seconds=int(timeout_seconds))
-        dist.init_process_group(backend="nccl", init_method="env://", timeout=timeout_timedelta)
+        # 显式指定 device_id，避免 "Guessing device ID based on global rank" 导致多机 hang
+        dist.init_process_group(
+            backend="nccl",
+            init_method="env://",
+            timeout=timeout_timedelta,
+            device_id=torch.device("cuda", local_rank),
+        )
         log.info(
             f"Initialized distributed training with local rank {local_rank} with timeout {timeout_seconds}",
             rank0_only=False,

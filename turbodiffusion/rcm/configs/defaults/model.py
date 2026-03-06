@@ -29,8 +29,31 @@ FSDP_CONFIG_T2V_SLA = dict(
     model=L(T2VModel_SLA)(config=T2VConfig_SLA(fsdp_shard_size=8), _recursive_=False),
 )
 
-
 def register_model():
     cs = ConfigStore.instance()
     cs.store(group="model", package="_global_", name="fsdp_t2v_distill_rcm", node=FSDP_CONFIG_T2V_DISTILL_RCM)
     cs.store(group="model", package="_global_", name="fsdp_t2v_sla", node=FSDP_CONFIG_T2V_SLA)
+
+    # IT2AV models depend on external MOVA code. Keep their registration optional so that
+    # the original TurboDiffusion T2V workflows remain unaffected in environments without MOVA.
+    if True: # Force registration to debug ImportError
+        from rcm.models.it2av_model_distill_rcm import IT2AVDistillConfig_rCM, IT2AVDistillModel_rCM
+        # from rcm.models.it2av_model_distill_sla import IT2AVDistillConfig_SLA, IT2AVDistillModel_SLA
+
+        # ddp_it2av_distill_sla = dict(
+        #     trainer=dict(distributed_parallelism="ddp"),
+        #     model=L(IT2AVDistillModel_SLA)(config=IT2AVDistillConfig_SLA(), _recursive_=False),
+        # )
+        ddp_it2av_distill_rcm = dict(
+            trainer=dict(distributed_parallelism="ddp"),
+            model=L(IT2AVDistillModel_rCM)(config=IT2AVDistillConfig_rCM(), _recursive_=False),
+        )
+        # FSDP variant for IT2AV RCM
+        fsdp_it2av_distill_rcm = dict(
+            trainer=dict(distributed_parallelism="fsdp"),
+            model=L(IT2AVDistillModel_rCM)(config=IT2AVDistillConfig_rCM(), _recursive_=False),
+        )
+
+        # cs.store(group="model", package="_global_", name="ddp_it2av_distill_sla", node=ddp_it2av_distill_sla)
+        cs.store(group="model", package="_global_", name="ddp_it2av_distill_rcm", node=ddp_it2av_distill_rcm)
+        cs.store(group="model", package="_global_", name="fsdp_it2av_distill_rcm", node=fsdp_it2av_distill_rcm)

@@ -141,7 +141,10 @@ class FusedAdam(torch.optim.Optimizer):
                 self.param_groups_master.append(
                     {
                         # Change related to master weights
-                        "params": [get_local_tensor_if_DTensor(p).clone().detach().float() if self.master_weights else None for p in param_list],
+                        "params": [
+                            get_local_tensor_if_DTensor(p).clone().detach().float() if self.master_weights and p.numel() > 0 else None
+                            for p in param_list
+                        ],
                     }
                 )
 

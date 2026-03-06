@@ -13,4 +13,7 @@ checkpoints/
 
 # outputs
 output*/
+infer_output*/
 *.mp4
+
+wandb/

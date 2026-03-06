@@ -27,5 +27,5 @@ class FlowEulerSampler:
             sigma_ = 0
         else:
             sigma_ = self.sigmas[timestep_id + 1]
-        prev_sample = sample + model_output * (sigma_ - sigma)
+        prev_sample = sample + model_output * (sigma_ - sigma) #下一时刻的位置 = 当前位置 + 速度 × 时间步长。
         return prev_sample

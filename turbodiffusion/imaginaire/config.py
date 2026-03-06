@@ -407,9 +407,13 @@ class Config:
 
         # broadcast job.name across all ranks to make sure it is consistent
         # otherwise, unaligned job names leads unaligned path to save checkpoints
+        import torch.distributed as dist
+        if dist.is_initialized():
+            dist.barrier()  # 确保所有 rank 同步后再 broadcast，避免 NCCL 时序问题
         job_name_tensor = torch.ByteTensor(bytearray(self.job.name, "utf-8")).cuda()
-        distributed.broadcast(job_name_tensor, 0)
-        self.job.name = job_name_tensor.cpu().numpy().tobytes().decode("utf-8")
+        if os.environ.get("SKIP_JOB_NAME_BROADCAST") != "1":
+            distributed.broadcast(job_name_tensor, 0)
+            self.job.name = job_name_tensor.cpu().numpy().tobytes().decode("utf-8")
 
         assert self.job.project != ""
         assert self.job.group != ""

@@ -14,6 +14,12 @@ checkpoints/
 # outputs
 output*/
 infer_output*/
+t2a_output/
+t2a_input_out/
+output/
 *.mp4
+
+# local prompt/input data
+input/
 
 wandb/

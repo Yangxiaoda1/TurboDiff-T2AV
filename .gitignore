@@ -19,3 +19,6 @@ infer_output*/
 wandb/# pixi environments
 .pixi/*
 !.pixi/config.toml
+
+# logs
+*.log

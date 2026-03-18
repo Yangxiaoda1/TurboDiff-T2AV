@@ -20,10 +20,9 @@ from typing import Optional
 
 import torch
 import torch.distributed as dist
-import torchvision
-import torchvision.transforms.functional as torchvision_F
 from einops import rearrange, repeat
 from megatron.core import parallel_state
+from PIL import Image
 
 import wandb
 from imaginaire.callbacks.every_n import EveryN
@@ -40,7 +39,15 @@ def resize_image(image: torch.Tensor, size: int = 1024) -> torch.Tensor:
     _, h, w = image.shape
     ratio = size / max(h, w)
     new_h, new_w = int(ratio * h), int(ratio * w)
-    return torchvision_F.resize(image, (new_h, new_w))
+    return torch.nn.functional.interpolate(
+        image.unsqueeze(0), size=(new_h, new_w), mode="bilinear", align_corners=False, antialias=True
+    ).squeeze(0)
+
+
+def save_tensor_image(image: torch.Tensor, path: str) -> None:
+    image = image.detach().cpu().clamp(0, 1)
+    image = (image * 255).round().to(torch.uint8).permute(1, 2, 0).contiguous().numpy()
+    Image.fromarray(image).save(path)
 
 
 def is_primitive(value):
@@ -310,9 +317,7 @@ class EveryNDrawSample_Distill(EveryN):
         if self.rank == 0 and wandb.run:
             if is_single_frame:  # image case
                 to_show = rearrange(to_show[:, :n_viz_sample], "n b c t h w -> t c (n h) (b w)")
-                image_grid = torchvision.utils.make_grid(to_show, nrow=1, padding=0, normalize=False)
-                # resize so that wandb can handle it
-                torchvision.utils.save_image(resize_image(image_grid, 1024), local_path, nrow=1, scale_each=True)
+                save_tensor_image(resize_image(to_show.squeeze(0), 1024), local_path)
             else:
                 to_show = to_show[:, :n_viz_sample]  # [n, b, c, 3, h, w]
                 if not self.show_all_frames:
@@ -324,10 +329,7 @@ class EveryNDrawSample_Distill(EveryN):
                 else:
                     log_image_size = 512 * to_show.shape[3]
                 to_show = rearrange(to_show, "n b c t h w -> 1 c (n h) (b t w)")
-
-                # resize so that wandb can handle it
-                image_grid = torchvision.utils.make_grid(to_show, nrow=1, padding=0, normalize=False)
-                torchvision.utils.save_image(resize_image(image_grid, log_image_size), local_path, nrow=1, scale_each=True)
+                save_tensor_image(resize_image(to_show.squeeze(0), log_image_size), local_path)
 
             return local_path
         return None

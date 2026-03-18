@@ -20,6 +20,7 @@ import torch
 import wandb
 
 from imaginaire.utils import distributed
+from imaginaire.utils import log
 from imaginaire.utils.callback import Callback
 
 
@@ -96,6 +97,21 @@ class GradClip(Callback):
             _fused_nan_to_num(params)
 
         total_norm = model.clip_grad_norm_(self.clip_norm)
+
+        if distributed.is_rank0():
+            debug_phase = getattr(model, "_debug_last_phase", "unknown phase")
+            debug_losses = getattr(model, "_debug_last_losses", {})
+            scm_loss = float(debug_losses.get("scm_loss", 0.0))
+            dmd_loss = float(debug_losses.get("dmd_loss", 0.0))
+            fake_score_loss = float(debug_losses.get("fake_score_loss", 0.0))
+            log.info(
+                f"Iteration {iteration}: "
+                f"phase={debug_phase} | "
+                f"scm_loss={scm_loss:.6f} | "
+                f"dmd_loss={dmd_loss:.6f} | "
+                f"fake_score_loss={fake_score_loss:.6f} | "
+                f"grad_norm={float(total_norm.item() if isinstance(total_norm, torch.Tensor) else total_norm):.6f}"
+            )
 
         self._cur_state.update(total_norm)
         if iteration % self.config.trainer.logging_iter == 0:

@@ -30,7 +30,6 @@ from rcm.configs.defaults.ckpt_type import register_ckpt_type
 from rcm.configs.defaults.dataloader import register_dataloader
 from rcm.configs.defaults.tokenizer import register_tokenizer
 from rcm.configs.defaults.model import register_model
-from rcm.configs.defaults.net import register_net, register_net_teacher
 
 
 @attrs.define(slots=False)
@@ -89,8 +88,12 @@ def make_config() -> Config:
     register_checkpoint()
     register_ckpt_type()
     register_model()
-    register_net()
-    register_net_teacher()
+    try:
+        from rcm.configs.defaults.net import register_net, register_net_teacher
+        register_net()
+        register_net_teacher()
+    except Exception:
+        pass
     register_conditioner()
     register_ema()
     register_tokenizer()

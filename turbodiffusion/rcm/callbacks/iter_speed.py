@@ -45,6 +45,22 @@ class IterSpeed(EveryN):
         self.name = self.__class__.__name__
         self.last_hit_time = time.time()
 
+    @staticmethod
+    def _append_named_losses(msg: str, output_batch: dict[str, torch.Tensor]) -> str:
+        """Append commonly tracked loss terms when available."""
+        key_to_label = (
+            ("loss_v", "video_loss"),
+            ("loss_a", "audio_loss"),
+            ("loss_scm", "loss_scm"),
+            ("loss_teacher", "loss_teacher"),
+            ("loss_dmd", "loss_dmd"),
+            ("loss_fake_score", "loss_fake_score"),
+        )
+        for key, label in key_to_label:
+            if key in output_batch:
+                msg += f"{label}: {output_batch[key].item():.4f} | "
+        return msg
+
     def on_training_step_end(
         self,
         model: ImaginaireModel,
@@ -59,10 +75,7 @@ class IterSpeed(EveryN):
                 f"Hit counter: {self.hit_counter + 1}/{self.hit_thres} | "
                 f"Loss: {loss.item():.4f} | "
             )
-            if "loss_v" in output_batch:
-                msg += f"video_loss: {output_batch['loss_v'].item():.4f} | "
-            if "loss_a" in output_batch:
-                msg += f"audio_loss: {output_batch['loss_a'].item():.4f} | "
+            msg = self._append_named_losses(msg, output_batch)
             msg += f"Time: {time.time() - self.last_hit_time:.2f}s"
             log.info(msg)
             self.hit_counter += 1
@@ -89,11 +102,8 @@ class IterSpeed(EveryN):
         cur_time = time.time()
         iter_speed = (cur_time - self.time) / self.every_n / self.step_size
 
-        msg = f"{iteration} : iter_speed {iter_speed:.2f} seconds per iteration | Loss: {loss.item():.4f}"
-        if "loss_v" in output_batch:
-            msg += f" | video_loss: {output_batch['loss_v'].item():.4f}"
-        if "loss_a" in output_batch:
-            msg += f" | audio_loss: {output_batch['loss_a'].item():.4f}"
+        msg = f"{iteration} : iter_speed {iter_speed:.2f} seconds per iteration | Loss: {loss.item():.4f} | "
+        msg = self._append_named_losses(msg, output_batch).rstrip(" |")
         log.info(msg)
 
         if wandb.run:

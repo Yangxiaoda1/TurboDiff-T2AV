@@ -16,4 +16,6 @@ output*/
 infer_output*/
 *.mp4
 
-wandb/
+wandb/# pixi environments
+.pixi/*
+!.pixi/config.toml

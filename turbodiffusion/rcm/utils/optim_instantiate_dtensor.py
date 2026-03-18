@@ -18,8 +18,15 @@ import torch
 from omegaconf import ListConfig
 from torch import nn
 
-from rcm.utils.fused_adam_dtensor import FusedAdam
 from imaginaire.utils import log
+
+try:
+    from rcm.utils.fused_adam_dtensor import FusedAdam
+except Exception as exc:
+    FusedAdam = None
+    _FUSED_ADAM_IMPORT_ERROR = exc
+else:
+    _FUSED_ADAM_IMPORT_ERROR = None
 
 
 def get_regular_param_group(net: nn.Module):
@@ -60,6 +67,11 @@ def get_base_optimizer(
     if optim_type == "adamw":
         opt_cls = torch.optim.AdamW
     elif optim_type == "fusedadam":
+        if FusedAdam is None:
+            raise ImportError(
+                "fusedadam optimizer requires transformer_engine/transformer_engine_torch to be installed. "
+                f"Original import error: {_FUSED_ADAM_IMPORT_ERROR!r}"
+            )
         opt_cls = FusedAdam
     else:
         raise ValueError(f"Unknown optimizer type: {optim_type}")
